@@ -6,14 +6,16 @@ import json
 # 不断检查仓位变化，根据仓位变化判断状态转换
 # ============================================================
 # 常量定义
-MY_SYMBOLS = ["BTC_USDT", "ETH_USDT", "SOL_USDT", "BTC_USDC", "ETH_USDC","ZEC_USDT"]
+MY_SYMBOLS = ["BTC_USDT", "ETH_USDT", "SOL_USDT", "BTC_USDC", "ETH_USDC","ZEC_USDT","1000PEPE_USDT","DOGE_USDT"]
 REAL = True
 if REAL:
     # 策略参数（实盘）
     STRATEGY_CONFIG = {
-        'entry_callback':0.1,
+        'entry_callback':0.12,
         'atr_period': 20,       # ATR周期
-        'sl_for_size': 0.35,    # 用于计算开仓大小的ATR倍数
+        'sl_for_size': 0.4,    # 用于计算开仓大小的ATR倍数
+        'base_position_pct': 0.4,  # 底仓百分比: 40%
+        'add_position_pct': 0.6,   # 加仓百分比: 60%
         'sl_atr': 0.6,          # 底仓止损: -0.6 ATR
         'add_trigger': 0.1,     # 加仓触发: 0.1 ATR
         'protective_sl_trigger': 0.2,  # 保护性止损触发: 底仓浮盈 +0.2 ATR
@@ -39,9 +41,11 @@ if REAL:
 else:
     # 策略参数(模拟盘)
     STRATEGY_CONFIG = {
-        'entry_callback':0.1,
+        'entry_callback':0.12,
         'atr_period': 20,       # ATR周期
-        'sl_for_size': 0.35,    # 用于计算开仓大小的ATR倍数
+        'sl_for_size': 0.4,    # 用于计算开仓大小的ATR倍数
+        'base_position_pct': 0.4,  # 底仓百分比: 40%
+        'add_position_pct': 0.6,   # 加仓百分比: 60%
         'sl_atr': 0.6/20,          # 底仓止损: -0.6 ATR
         'add_trigger': 0.1/20,     # 加仓触发: 0.1 ATR
         'protective_sl_trigger': 0.2/20,  # 保护性止损触发: 底仓浮盈 +0.2 ATR
@@ -413,12 +417,13 @@ class OrderBasedStrategyManager:
         BTC_USDT -> BTCUSDT
         """
         return symbol.replace("_", "")
-    def start_entry(self, symbol, direction_str, max_loss, entry_mode, limit_price=0, volatility_mode=1):
+    def start_entry(self, symbol, direction_str, max_loss, entry_mode, limit_price=0, volatility_mode=1, atr_period=0):
         """
         启动入场流程
         direction_str: "buy" 或 "sell"
         entry_mode: 1=市价, 2=限价, 3=市价激活跟踪, 4=限价激活跟踪
         volatility_mode: 0=小波动, 1=中波动, 2=大波动
+        atr_period: ATR周期，0或不传时使用默认值(20)
         """
         if self.state != "IDLE":
             Log("⚠️ 策略正在运行中", "#FF9900")
@@ -433,8 +438,11 @@ class OrderBasedStrategyManager:
             Log("❌ 精度设置失败")
             self._reset()
             return False
+        # 确定使用的ATR周期：如果传入的atr_period > 0，使用传入值，否则使用配置默认值
+        actual_atr_period = atr_period if atr_period > 0 else self.cfg['atr_period']
+        Log(f"📊 使用ATR周期: {actual_atr_period}")
         # 计算ATR (排除今日)
-        self.atr_val = get_atr(self.ex, symbol, self.cfg['atr_period'], exclude_today=True)
+        self.atr_val = get_atr(self.ex, symbol, actual_atr_period, exclude_today=True)
         if not self.atr_val:
             Log("❌ ATR计算失败")
             self._reset()
@@ -450,8 +458,9 @@ class OrderBasedStrategyManager:
         # 保存确认信息
         ticker = _C(self.ex.GetTicker)
         current_price = ticker['Last']
-        base_amount = self.precision_mgr.format_amount(self.full_amount * 0.5)
+        base_amount = self.precision_mgr.format_amount(self.full_amount * self.cfg['base_position_pct'])
         volatility_desc = {0: '小波动', 1: '中波动', 2: '大波动'}[volatility_mode]
+        actual_atr_period = atr_period if atr_period > 0 else self.cfg['atr_period']
         self.pending_confirm_info = {
             'symbol': symbol,
             'direction': '做多 🟢' if self.direction == 1 else '做空 🔴',
@@ -462,11 +471,14 @@ class OrderBasedStrategyManager:
             'limit_price': limit_price,
             'current_price': current_price,
             'atr': self.atr_val,
+            'atr_period': actual_atr_period,
             'max_loss': max_loss,
             'base_amount': base_amount,
             'full_amount': self.full_amount,
             'base_value': base_amount * current_price,
-            'full_value': self.full_amount * current_price
+            'full_value': self.full_amount * current_price,
+            'base_pct': int(self.cfg['base_position_pct'] * 100),
+            'add_pct': int(self.cfg['add_position_pct'] * 100)
         }
         self.state = "WAIT_CONFIRM"
         Log(f"✅ 入场参数设置完成，等待确认", "#00BFFF")
@@ -489,16 +501,18 @@ class OrderBasedStrategyManager:
         if info['mode'] in [2, 4]:
             lines.append(f"触发价格: {info['limit_price']}")
         lines.extend([
-            f"当前价格: {info['current_price']:.2f}",
-            f"ATR值: {info['atr']:.2f}",
+            f"当前价格: {info['current_price']}",
+            f"ATR周期: {info['atr_period']}",
+            f"ATR值: {info['atr']}",
             f"最大亏损: {info['max_loss']} USDT",
             "",
             "-" * 50,
-            f"底仓数量: {info['base_amount']:.4f}",
-            f"底仓价值: {info['base_value']:.2f} USDT",
+            f"底仓数量: {info['base_amount']} ({info['base_pct']}%)",
+            f"底仓价值: {info['base_value']} USDT",
+            f"加仓比例: {info['add_pct']}%",
             "",
-            f"满仓数量: {info['full_amount']:.4f}",
-            f"满仓价值: {info['full_value']:.2f} USDT",
+            f"满仓数量: {info['full_amount']} (100%)",
+            f"满仓价值: {info['full_value']} USDT",
             "",
             "=" * 50,
             "⚠️  请点击【✅ 确认开仓】或【❌ 取消】"
@@ -511,7 +525,7 @@ class OrderBasedStrategyManager:
             return False
         Log("✅ 用户确认开仓，开始挂单", "#00FF00")
         # 计算底仓数量
-        base_amount = self.precision_mgr.format_amount(self.full_amount * 0.5)
+        base_amount = self.precision_mgr.format_amount(self.full_amount * self.cfg['base_position_pct'])
         side = "BUY" if self.direction == 1 else "SELL"
         # 根据入场模式执行
         if self.entry_mode == 1:
@@ -619,7 +633,7 @@ class OrderBasedStrategyManager:
         if current_amount is None:
             return  # 获取失败，跳过本轮
         # 计算预期的底仓和满仓数量
-        expected_base = self.precision_mgr.format_amount(self.full_amount * 0.5)
+        expected_base = self.precision_mgr.format_amount(self.full_amount * self.cfg['base_position_pct'])
         expected_full = self.full_amount
         # 定义一个容差 (考虑精度误差)
         tolerance = self.precision_mgr.min_amount * 2
@@ -730,11 +744,11 @@ class OrderBasedStrategyManager:
     def _place_orders_after_base_entry(self):
         """
         步骤3: 底仓建立后的挂单动作
-        - 挂止损单 (-0.6 ATR, 半仓)
-        - 挂条件委托单 (浮盈0.1 ATR时市价买入50%满仓)
+        - 挂止损单 (-0.6 ATR, 底仓数量)
+        - 挂条件委托单 (浮盈0.1 ATR时市价加仓)
         """
         # 止损单
-        base_amount = self.precision_mgr.format_amount(self.full_amount * 0.5)
+        base_amount = self.precision_mgr.format_amount(self.full_amount * self.cfg['base_position_pct'])
         sl_price = self.base_price - (self.direction * self.cfg['sl_atr'] * self.atr_val)
         sl_price = self.precision_mgr.format_price(sl_price)
         # 止损方向: 做多时止损=卖出(SELL), 做空时止损=买入(BUY)
@@ -745,9 +759,11 @@ class OrderBasedStrategyManager:
         # 条件委托单: 浮盈0.1 ATR时市价加仓
         add_trigger_price = self.base_price + (self.direction * self.cfg['add_trigger'] * self.atr_val)
         add_trigger_price = self.precision_mgr.format_price(add_trigger_price)
+        # 加仓数量 = 满仓 * 加仓百分比
+        add_amount = self.precision_mgr.format_amount(self.full_amount * self.cfg['add_position_pct'])
         # 加仓方向: 做多时加仓=买入(BUY), 做空时加仓=卖出(SELL)
         add_side = "BUY" if self.direction == 1 else "SELL"
-        res_add = self.order_mgr.place_stop_market(self.symbol_for_api, add_side, base_amount, add_trigger_price)
+        res_add = self.order_mgr.place_stop_market(self.symbol_for_api, add_side, add_amount, add_trigger_price)
         if not res_add:
             Log("⚠️ 加仓触发单挂单失败", "#FF9900")
     def _place_orders_after_full_position(self):
@@ -825,6 +841,7 @@ def main():
             {"name": "mode", "type": "selected", "defValue": "1.市价|2.限价|3.市价激活跟踪|4.限价激活跟踪", "description": "入场模式"},
             {"name": "volatility", "type": "selected", "defValue": "小波动|中波动|大波动", "description": "波动模式"},
             {"name": "max_loss", "type": "number", "defValue": 50, "description": "最大亏损(USDT)"},
+            {"name": "atr_period", "type": "number", "defValue": 0, "description": "ATR周期(0=默认20)"},
             {"name": "limit_price", "type": "number", "defValue": 0, "description": "触发价(限价模式)"}
         ]
     }
@@ -863,8 +880,9 @@ def main():
                         mode = int(data['mode']) + 1
                         volatility_mode = int(data.get('volatility', 0))  # 0=小波动, 1=中波动, 2=大波动
                         max_loss = float(data['max_loss'])
+                        atr_period = int(data.get('atr_period', 0))  # 0表示使用默认值
                         limit_price = float(data.get('limit_price', 0))
-                        strategy.start_entry(symbol, direction, max_loss, mode, limit_price, volatility_mode)
+                        strategy.start_entry(symbol, direction, max_loss, mode, limit_price, volatility_mode, atr_period)
                     elif cmd == "ConfirmEntry":
                         strategy.confirm_entry()
                     elif cmd == "CancelEntry":
