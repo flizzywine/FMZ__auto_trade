@@ -7,7 +7,8 @@ import json
 # ============================================================
 # 常量定义
 MY_SYMBOLS = ["BTC_USDT", "ETH_USDT", "SOL_USDT",
-              "ZEC_USDT","1000PEPE_USDT","DOGE_USDT"]
+              "ZEC_USDT","1000PEPE_USDT","DOGE_USDT",
+              "XRP_USDT","币安人生_USDT"]
 REAL = True
 if REAL:
     # 策略参数（实盘）
@@ -388,6 +389,13 @@ class OrderBasedStrategyManager:
         self.pending_confirm_info = {}
         # 保护性止损标志
         self.protective_sl_placed = False
+        # 入场配置信息（用于策略状态展示）
+        self.entry_config = {
+            'volatility_desc': '',
+            'atr_mode': '',
+            'atr_value': 0,
+            'entry_mode_desc': ''
+        }
     def _reset(self):
         """重置策略状态"""
         if self.symbol:
@@ -411,6 +419,12 @@ class OrderBasedStrategyManager:
         self.last_position_amount = 0
         self.pending_confirm_info = {}
         self.protective_sl_placed = False
+        self.entry_config = {
+            'volatility_desc': '',
+            'atr_mode': '',
+            'atr_value': 0,
+            'entry_mode_desc': ''
+        }
         Log("🔄 策略已重置")
     def _convert_symbol_for_api(self, symbol):
         """
@@ -535,6 +549,16 @@ class OrderBasedStrategyManager:
             Log("❌ 当前不在确认状态", "#FF0000")
             return False
         Log("✅ 用户确认开仓，开始挂单", "#00FF00")
+
+        # 保存入场配置信息
+        info = self.pending_confirm_info
+        self.entry_config = {
+            'volatility_desc': info['volatility_desc'],
+            'atr_mode': '百分比模式' if info['atr_mode'] == 'percentage' else '周期模式',
+            'atr_value': info['atr_value'],
+            'entry_mode_desc': info['mode_desc']
+        }
+
         # 计算底仓数量
         base_amount = self.precision_mgr.format_amount(self.full_amount * self.cfg['base_position_pct'])
         side = "BUY" if self.direction == 1 else "SELL"
@@ -820,12 +844,29 @@ class OrderBasedStrategyManager:
             lines.append(f"当前状态: {self.state}")
             lines.append(f"币种: {self.symbol}")
             lines.append(f"方向: {'做多 🟢' if self.direction == 1 else '做空 🔴'}")
-            lines.append(f"ATR: {self.atr_val:.2f}")
-            lines.append(f"满仓数量: {self.full_amount:.4f}")
+            lines.append("")
+            lines.append("-" * 50)
+            lines.append("📋 入场配置信息")
+            lines.append("-" * 50)
+            if self.entry_config['entry_mode_desc']:
+                lines.append(f"入场模式: {self.entry_config['entry_mode_desc']}")
+            if self.entry_config['volatility_desc']:
+                lines.append(f"波动模式: {self.entry_config['volatility_desc']}")
+            if self.entry_config['atr_mode']:
+                if self.entry_config['atr_mode'] == '百分比模式':
+                    lines.append(f"ATR模式: {self.entry_config['atr_mode']} ({self.entry_config['atr_value']}%)")
+                else:
+                    lines.append(f"ATR模式: {self.entry_config['atr_mode']} ({int(self.entry_config['atr_value'])}天)")
+            lines.append("")
+            lines.append("-" * 50)
+            lines.append("📊 实时数据")
+            lines.append("-" * 50)
+            lines.append(f"ATR值: {self.atr_val}")
+            lines.append(f"满仓数量: {self.full_amount}")
             if self.base_price > 0:
-                lines.append(f"底仓均价: {self.base_price:.2f}")
+                lines.append(f"底仓均价: {self.base_price}")
             if self.last_position_amount > 0:
-                lines.append(f"当前持仓: {self.last_position_amount:.4f}")
+                lines.append(f"当前持仓: {self.last_position_amount}")
         lines.append("=" * 50)
         return "\n".join(lines)
 
