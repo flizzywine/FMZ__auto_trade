@@ -6,7 +6,8 @@ import json
 # 不断检查仓位变化，根据仓位变化判断状态转换
 # ============================================================
 # 常量定义
-MY_SYMBOLS = ["BTC_USDT", "ETH_USDT", "SOL_USDT", "BTC_USDC", "ETH_USDC","ZEC_USDT","1000PEPE_USDT","DOGE_USDT"]
+MY_SYMBOLS = ["BTC_USDT", "ETH_USDT", "SOL_USDT",
+              "ZEC_USDT","1000PEPE_USDT","DOGE_USDT"]
 REAL = True
 if REAL:
     # 策略参数（实盘）
@@ -417,13 +418,13 @@ class OrderBasedStrategyManager:
         BTC_USDT -> BTCUSDT
         """
         return symbol.replace("_", "")
-    def start_entry(self, symbol, direction_str, max_loss, entry_mode, limit_price=0, volatility_mode=1, atr_period=0):
+    def start_entry(self, symbol, direction_str, max_loss, entry_mode, limit_price=0, volatility_mode=1, atr_percentage=0):
         """
         启动入场流程
         direction_str: "buy" 或 "sell"
         entry_mode: 1=市价, 2=限价, 3=市价激活跟踪, 4=限价激活跟踪
         volatility_mode: 0=小波动, 1=中波动, 2=大波动
-        atr_period: ATR周期，0或不传时使用默认值(20)
+        atr_percentage: ATR百分比(如50表示50%)，0或不传时使用默认周期(20)
         """
         if self.state != "IDLE":
             Log("⚠️ 策略正在运行中", "#FF9900")
@@ -438,15 +439,23 @@ class OrderBasedStrategyManager:
             Log("❌ 精度设置失败")
             self._reset()
             return False
-        # 确定使用的ATR周期：如果传入的atr_period > 0，使用传入值，否则使用配置默认值
-        actual_atr_period = atr_period if atr_period > 0 else self.cfg['atr_period']
-        Log(f"📊 使用ATR周期: {actual_atr_period}")
-        # 计算ATR (排除今日)
-        self.atr_val = get_atr(self.ex, symbol, actual_atr_period, exclude_today=True)
-        if not self.atr_val:
-            Log("❌ ATR计算失败")
-            self._reset()
-            return False
+        # 获取当前价格
+        ticker = _C(self.ex.GetTicker)
+        current_price = ticker['Last']
+        # 计算ATR值
+        if atr_percentage > 0:
+            # 使用百分比模式: ATR = 当前价格 * (百分比 / 100)
+            self.atr_val = current_price * (atr_percentage / 100)
+            Log(f"📊 使用ATR百分比模式: {atr_percentage}% → ATR = {self.atr_val:.2f}")
+        else:
+            # 使用传统周期模式
+            actual_atr_period = self.cfg['atr_period']
+            Log(f"📊 使用ATR周期模式: {actual_atr_period}天")
+            self.atr_val = get_atr(self.ex, symbol, actual_atr_period, exclude_today=True)
+            if not self.atr_val:
+                Log("❌ ATR计算失败")
+                self._reset()
+                return False
         # 计算满仓数量
         raw_size = max_loss / (self.cfg['sl_for_size'] * self.atr_val)
         self.full_amount = self.precision_mgr.format_amount(raw_size)
@@ -456,11 +465,8 @@ class OrderBasedStrategyManager:
         self.entry_limit_price = limit_price
         self.volatility_mode = volatility_mode
         # 保存确认信息
-        ticker = _C(self.ex.GetTicker)
-        current_price = ticker['Last']
         base_amount = self.precision_mgr.format_amount(self.full_amount * self.cfg['base_position_pct'])
         volatility_desc = {0: '小波动', 1: '中波动', 2: '大波动'}[volatility_mode]
-        actual_atr_period = atr_period if atr_period > 0 else self.cfg['atr_period']
         self.pending_confirm_info = {
             'symbol': symbol,
             'direction': '做多 🟢' if self.direction == 1 else '做空 🔴',
@@ -471,7 +477,8 @@ class OrderBasedStrategyManager:
             'limit_price': limit_price,
             'current_price': current_price,
             'atr': self.atr_val,
-            'atr_period': actual_atr_period,
+            'atr_mode': 'percentage' if atr_percentage > 0 else 'period',
+            'atr_value': atr_percentage if atr_percentage > 0 else self.cfg['atr_period'],
             'max_loss': max_loss,
             'base_amount': base_amount,
             'full_amount': self.full_amount,
@@ -500,9 +507,13 @@ class OrderBasedStrategyManager:
         ]
         if info['mode'] in [2, 4]:
             lines.append(f"触发价格: {info['limit_price']}")
+        lines.append(f"当前价格: {info['current_price']}")
+        # 显示ATR计算方式
+        if info['atr_mode'] == 'percentage':
+            lines.append(f"ATR模式: 百分比 {info['atr_value']}%")
+        else:
+            lines.append(f"ATR模式: 周期 {info['atr_value']}天")
         lines.extend([
-            f"当前价格: {info['current_price']}",
-            f"ATR周期: {info['atr_period']}",
             f"ATR值: {info['atr']}",
             f"最大亏损: {info['max_loss']} USDT",
             "",
@@ -673,7 +684,7 @@ class OrderBasedStrategyManager:
             # 再检查保护性止损触发条件（仅在有仓位情况下检查）
             elif not self.protective_sl_placed and current_amount > 0:
                 self._check_and_place_protective_sl(current_price, current_amount)
-    def _check_and_place_protective_sl(self, current_price):
+    def _check_and_place_protective_sl(self, current_price, current_amount):
         """
         检查并挂保护性止损单
         当底仓浮盈达到 +0.2 ATR 时，撤销所有订单并重新挂单：
@@ -841,7 +852,7 @@ def main():
             {"name": "mode", "type": "selected", "defValue": "1.市价|2.限价|3.市价激活跟踪|4.限价激活跟踪", "description": "入场模式"},
             {"name": "volatility", "type": "selected", "defValue": "小波动|中波动|大波动", "description": "波动模式"},
             {"name": "max_loss", "type": "number", "defValue": 50, "description": "最大亏损(USDT)"},
-            {"name": "atr_period", "type": "number", "defValue": 0, "description": "ATR周期(0=默认20)"},
+            {"name": "atr_percentage", "type": "number", "defValue": 0, "description": "ATR百分比(0=默认周期20)"},
             {"name": "limit_price", "type": "number", "defValue": 0, "description": "触发价(限价模式)"}
         ]
     }
@@ -880,9 +891,9 @@ def main():
                         mode = int(data['mode']) + 1
                         volatility_mode = int(data.get('volatility', 0))  # 0=小波动, 1=中波动, 2=大波动
                         max_loss = float(data['max_loss'])
-                        atr_period = int(data.get('atr_period', 0))  # 0表示使用默认值
+                        atr_percentage = float(data.get('atr_percentage', 0))  # 0表示使用默认周期
                         limit_price = float(data.get('limit_price', 0))
-                        strategy.start_entry(symbol, direction, max_loss, mode, limit_price, volatility_mode, atr_period)
+                        strategy.start_entry(symbol, direction, max_loss, mode, limit_price, volatility_mode, atr_percentage)
                     elif cmd == "ConfirmEntry":
                         strategy.confirm_entry()
                     elif cmd == "CancelEntry":
