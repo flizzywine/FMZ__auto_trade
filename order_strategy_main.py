@@ -46,14 +46,14 @@ STRATEGY_CONFIG = {
 # ============================================================
 class OrderBasedStrategyManager:
     """基于交易所挂单的策略管理器"""
-    def __init__(self, exchange, config, utils):
+    def __init__(self, exchange, config):
         self.ex = exchange
         self.cfg = config
-        # 从模板类库导入工具类
-        self.precision_mgr = utils['PrecisionManager'](exchange)
-        self.order_mgr = utils['OrderManager'](exchange, self.precision_mgr)
-        self.notif_mgr = utils['NotificationManager'](exchange)
-        self.atr_calc = utils['ATRCalculator']
+        # 从模板类库导入工具类 (通过ext对象直接调用)
+        self.precision_mgr = ext.PrecisionManager(exchange)
+        self.order_mgr = ext.OrderManager(exchange, self.precision_mgr)
+        self.notif_mgr = ext.NotificationManager(exchange)
+        self.atr_calc = ext.ATRCalculator
         # 策略状态
         self.state = "IDLE"
         self.symbol = ""
@@ -355,10 +355,10 @@ class OrderBasedStrategyManager:
         notif_msg = (
             f"币种: {self.symbol}\n"
             f"方向: {direction_str}\n"
-            f"底仓价格: {self.base_price:.2f}\n"
-            f"止损价格: {sl_price:.2f}\n"
-            f"亏损率: {loss_pct:+.2f}%\n"
-            f"亏损金额: {loss_amount:+.2f} USDT\n"
+            f"底仓价格: {self.base_price}\n"
+            f"止损价格: {sl_price}\n"
+            f"亏损率: {loss_pct}%\n"
+            f"亏损金额: {loss_amount} USDT\n"
             f"时间: {_D()}"
         )
         self.notif_mgr.send_notification(notif_title, notif_msg)
@@ -370,10 +370,10 @@ class OrderBasedStrategyManager:
         notif_msg = (
             f"币种: {self.symbol}\n"
             f"方向: {direction_str}\n"
-            f"开仓价格: {current_price:.2f}\n"
-            f"底仓数量: {current_amount:.4f}\n"
-            f"底仓价值: {current_amount * current_price:.2f} USDT\n"
-            f"ATR: {self.atr_val:.2f}\n"
+            f"开仓价格: {current_price}\n"
+            f"底仓数量: {current_amount}\n"
+            f"底仓价值: {current_amount * current_price} USDT\n"
+            f"ATR: {self.atr_val}\n"
             f"时间: {_D()}"
         )
         self.notif_mgr.send_notification(notif_title, notif_msg)
@@ -386,11 +386,11 @@ class OrderBasedStrategyManager:
         notif_msg = (
             f"币种: {self.symbol}\n"
             f"方向: {direction_str}\n"
-            f"底仓价格: {self.base_price:.2f}\n"
-            f"当前价格: {current_price:.2f}\n"
-            f"浮盈率: {profit_pct:+.2f}%\n"
-            f"满仓数量: {current_amount:.4f}\n"
-            f"满仓价值: {current_amount * current_price:.2f} USDT\n"
+            f"底仓价格: {self.base_price}\n"
+            f"当前价格: {current_price}\n"
+            f"浮盈率: {profit_pct}%\n"
+            f"满仓数量: {current_amount}\n"
+            f"满仓价值: {current_amount * current_price} USDT\n"
             f"时间: {_D()}"
         )
         self.notif_mgr.send_notification(notif_title, notif_msg)
@@ -406,11 +406,11 @@ class OrderBasedStrategyManager:
         notif_msg = (
             f"币种: {self.symbol}\n"
             f"方向: {direction_str}\n"
-            f"底仓价格: {self.base_price:.2f}\n"
-            f"平仓价格: {close_price:.2f}\n"
-            f"盈亏率: {profit_pct:+.2f}%\n"
-            f"盈亏金额: {profit_amount:+.2f} USDT\n"
-            f"持仓数量: {self.last_position_amount:.4f}\n"
+            f"底仓价格: {self.base_price}\n"
+            f"平仓价格: {close_price}\n"
+            f"盈亏率: {profit_pct}%\n"
+            f"盈亏金额: {profit_amount} USDT\n"
+            f"持仓数量: {self.last_position_amount}\n"
             f"时间: {_D()}"
         )
         self.notif_mgr.send_notification(notif_title, notif_msg)
@@ -700,18 +700,8 @@ def main():
     Log("🚀 基于挂单的策略启动", "#00FF00")
     exchange.SetContractType("swap")
 
-    # 引用模板类库 - 在FMZ平台上需要在策略设置中添加模板依赖
-    # 本地测试时，直接导入
-    try:
-        # FMZ平台环境：使用 ext 前缀引用模板
-        utils = ext.TradingUtils()
-    except:
-        # 本地测试环境：直接导入模块
-        import trading_utils
-        utils = trading_utils.init()
-
-    # 初始化策略管理器
-    strategy = OrderBasedStrategyManager(exchange, STRATEGY_CONFIG, utils)
+    # 初始化策略管理器 (直接使用ext对象中的工具类)
+    strategy = OrderBasedStrategyManager(exchange, STRATEGY_CONFIG)
     # UI按钮配置
     btn_trade = {
         "type": "button",

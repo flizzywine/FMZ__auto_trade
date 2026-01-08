@@ -9,28 +9,32 @@ import json
 # ============================================================
 class NotificationManager:
     """管理邮件和APP推送通知"""
-    def __init__(self, exchange_obj):
+    def __init__(self, exchange_obj=None):
         self.ex = exchange_obj
 
-    def send_notification(self, title, message):
+    def send_notification(self, message, title=""):
         """
         发送通知 (同时发送邮件和APP推送)
-        title: 通知标题
+        使用 @ 符号可以同时发送到邮件和APP
+
         message: 通知内容
+        title: 通知标题 (可选)
+
+        示例:
+        notify.send_notification("交易信号触发！")
+        notify.send_notification("多单开仓成功", "交易提醒")
         """
         try:
-            # 发送APP推送
-            self.ex.IO("push", f"{title}\n{message}")
-            Log(f"📱 APP通知已发送: {title}")
-        except Exception as e:
-            Log(f"⚠️ APP推送失败: {e}", "#FF9900")
+            # 使用 @ 符号发送通知，FMZ会自动同时发送邮件和APP推送
+            if title:
+                full_message = f"{title}: {message}"
+            else:
+                full_message = message
 
-        try:
-            # 发送邮件
-            self.ex.IO("send_email", title, message)
-            Log(f"📧 邮件通知已发送: {title}")
+            Log(full_message, "@")
+            
         except Exception as e:
-            Log(f"⚠️ 邮件发送失败: {e}", "#FF9900")
+            Log(f"⚠️ 通知发送失败: {e}", "#FF9900")
 
 # ============================================================
 # 2. 精度管理类
@@ -347,16 +351,9 @@ class ATRCalculator:
         return current_price * (percentage / 100)
 
 # ============================================================
-# 导出函数 (FMZ模板类库必须)
+# 导出类 (通过ext对象导出,主策略可通过ext.XXX()调用)
 # ============================================================
-def init():
-    """
-    初始化函数 - FMZ平台调用此函数获取类实例
-    返回一个包含所有工具类的字典
-    """
-    return {
-        'NotificationManager': NotificationManager,
-        'PrecisionManager': PrecisionManager,
-        'OrderManager': OrderManager,
-        'ATRCalculator': ATRCalculator
-    }
+ext.NotificationManager = NotificationManager
+ext.PrecisionManager = PrecisionManager
+ext.OrderManager = OrderManager
+ext.ATRCalculator = ATRCalculator
