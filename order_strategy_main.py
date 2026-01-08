@@ -1,404 +1,59 @@
 import time
 import json
 # ============================================================
-# 基于交易所挂单的趋势策略
+# 基于交易所挂单的趋势策略 - 主策略文件
 # 核心思想: 通过交易所原生订单(止损单、跟踪单、限价单)实现策略
 # 不断检查仓位变化，根据仓位变化判断状态转换
 # ============================================================
+
 # 常量定义
 MY_SYMBOLS = ["BTC_USDT", "ETH_USDT", "SOL_USDT",
               "ZEC_USDT","1000PEPE_USDT","DOGE_USDT",
               "XRP_USDT","币安人生_USDT"]
-REAL = True
-if REAL:
-    # 策略参数（实盘）
-    STRATEGY_CONFIG = {
-        'entry_callback':0.12,
-        'atr_period': 20,       # ATR周期
-        'sl_for_size': 0.4,    # 用于计算开仓大小的ATR倍数
-        'base_position_pct': 0.4,  # 底仓百分比: 40%
-        'add_position_pct': 0.6,   # 加仓百分比: 60%
-        'sl_atr': 0.6,          # 底仓止损: -0.6 ATR
-        'add_trigger': 0.1,     # 加仓触发: 0.1 ATR
-        'protective_sl_trigger': 0.2,  # 保护性止损触发: 底仓浮盈 +0.2 ATR
-        'protective_sl_offset': 0.2,   # 保护性止损位置: -0.2 ATR
-        'full_sl_atr': 0.3,     # 满仓止损: -0.3 ATR
-        'trail_activation': 0.28, # 跟踪止盈激活: 0.28 ATR
-        'trail_callback': 0.15,  # 跟踪止盈回调: 0.15 ATR
-        # 小波动模式 (0): 直接在+0.3ATR走90%
-        'volatility_small': [
-            {'atr': 0.3, 'pct': 0.9}
-        ],
-        # 中波动模式 (1): +0.35ATR (25%), +0.5ATR (45%), +0.65ATR (20%)
-        'volatility_medium': [
-            {'atr': 0.35, 'pct': 0.25},
-            {'atr': 0.5, 'pct': 0.45},
-            {'atr': 0.65, 'pct': 0.2}
-        ],
-        # 大波动模式 (2): +0.65ATR走80%
-        'volatility_large': [
-            {'atr': 0.65, 'pct': 0.8}
-        ]
-    }
-else:
-    # 策略参数(模拟盘)
-    STRATEGY_CONFIG = {
-        'entry_callback':0.12,
-        'atr_period': 20,       # ATR周期
-        'sl_for_size': 0.4,    # 用于计算开仓大小的ATR倍数
-        'base_position_pct': 0.4,  # 底仓百分比: 40%
-        'add_position_pct': 0.6,   # 加仓百分比: 60%
-        'sl_atr': 0.6/20,          # 底仓止损: -0.6 ATR
-        'add_trigger': 0.1/20,     # 加仓触发: 0.1 ATR
-        'protective_sl_trigger': 0.2/20,  # 保护性止损触发: 底仓浮盈 +0.2 ATR
-        'protective_sl_offset': 0.2/20,   # 保护性止损位置: -0.2 ATR
-        'full_sl_atr': 0.3/20,     # 满仓止损: -0.3 ATR
-        'trail_activation': 0.3/20, # 跟踪止盈激活: 0.3 ATR
-        'trail_callback': 0.15/20,  # 跟踪止盈回调: 0.15 ATR
-        # 小波动模式 (0): 直接在+0.3ATR走90%
-        'volatility_small': [
-            {'atr': 0.3/20, 'pct': 0.9}
-        ],
-        # 中波动模式 (1): +0.35ATR (20%), +0.5ATR (50%), +0.6ATR (20%)
-        'volatility_medium': [
-            {'atr': 0.35/20, 'pct': 0.2},
-            {'atr': 0.5/20, 'pct': 0.5},
-            {'atr': 0.6/20, 'pct': 0.2}
-        ],
-        # 大波动模式 (2): +0.65ATR走80%
-        'volatility_large': [
-            {'atr': 0.65/20, 'pct': 0.8}
-        ]
-    }
-# ============================================================
-# 1. 通知管理类
-# ============================================================
-class NotificationManager:
-    """管理邮件和APP推送通知"""
-    def __init__(self, exchange_obj):
-        self.ex = exchange_obj
 
-    def send_notification(self, title, message):
-        """
-        发送通知 (同时发送邮件和APP推送)
-        title: 通知标题
-        message: 通知内容
-        """
-        try:
-            # 发送APP推送
-            self.ex.IO("push", f"{title}\n{message}")
-            Log(f"📱 APP通知已发送: {title}")
-        except Exception as e:
-            Log(f"⚠️ APP推送失败: {e}", "#FF9900")
-
-        try:
-            # 发送邮件
-            self.ex.IO("send_email", title, message)
-            Log(f"📧 邮件通知已发送: {title}")
-        except Exception as e:
-            Log(f"⚠️ 邮件发送失败: {e}", "#FF9900")
+# 策略参数（实盘）
+STRATEGY_CONFIG = {
+    'entry_callback':0.12,
+    'atr_period': 20,       # ATR周期
+    'sl_for_size': 0.4,    # 用于计算开仓大小的ATR倍数
+    'base_position_pct': 0.4,  # 底仓百分比: 40%
+    'add_position_pct': 0.6,   # 加仓百分比: 60%
+    'sl_atr': 0.6,          # 底仓止损: -0.6 ATR
+    'add_trigger': 0.1,     # 加仓触发: 0.1 ATR
+    'protective_sl_trigger': 0.2,  # 保护性止损触发: 底仓浮盈 +0.2 ATR
+    'protective_sl_offset': 0.2,   # 保护性止损位置: -0.2 ATR
+    'full_sl_atr': 0.3,     # 满仓止损: -0.3 ATR
+    'trail_activation': 0.28, # 跟踪止盈激活: 0.28 ATR
+    'trail_callback': 0.15,  # 跟踪止盈回调: 0.15 ATR
+    # 小波动模式 (0): 直接在+0.3ATR走90%
+    'volatility_small': [
+        {'atr': 0.3, 'pct': 0.9}
+    ],
+    # 中波动模式 (1): +0.35ATR (25%), +0.5ATR (45%), +0.65ATR (20%)
+    'volatility_medium': [
+        {'atr': 0.35, 'pct': 0.25},
+        {'atr': 0.5, 'pct': 0.45},
+        {'atr': 0.65, 'pct': 0.2}
+    ],
+    # 大波动模式 (2): +0.65ATR走80%
+    'volatility_large': [
+        {'atr': 0.65, 'pct': 0.8}
+    ]
+}
 
 # ============================================================
-# 2. 交易所订单管理类
-# ============================================================
-class OrderManager:
-    """封装订单管理 - 市价单/限价单用FMZ平台,止损单/跟踪单用币安API"""
-    def __init__(self, exchange_obj, precision_mgr):
-        self.ex = exchange_obj
-        self.precision = precision_mgr
-        self.algo_endpoint = "/fapi/v1/algoOrder"  # 新的条件单端点 (2025-12-09更新)
-    def place_market(self, side, quantity):
-        """
-        下市价单 - 使用FMZ平台方法
-        side: "BUY" 或 "SELL"
-        """
-        try:
-            if side == "BUY":
-                order = self.ex.Buy(-1, quantity)  # -1表示市价
-            else:
-                order = self.ex.Sell(-1, quantity)
-            if order:
-                Log(f"✅ 开仓 {side} {quantity} (市价)")
-                return order
-            else:
-                Log(f"❌ 市价单失败", "#FF0000")
-                return None
-        except Exception as e:
-            Log(f"❌ 市价单异常: {e}", "#FF0000")
-            return None
-    def place_limit(self, side, quantity, price, reduce_only=False):
-        """
-        下限价单 - 使用FMZ平台方法
-        reduce_only: 仅平仓模式
-        """
-        try:
-            formatted_price = self.precision.format_price(price)
-            if side == "BUY":
-                if reduce_only:
-                    order = self.ex.Buy(formatted_price, quantity, "reduce_only")
-                else:
-                    order = self.ex.Buy(formatted_price, quantity)
-            else:
-                if reduce_only:
-                    order = self.ex.Sell(formatted_price, quantity, "reduce_only")
-                else:
-                    order = self.ex.Sell(formatted_price, quantity)
-            if order:
-                action = "止盈" if reduce_only else "开仓"
-                Log(f"✅ {action} {side} {quantity} @ {formatted_price}")
-                return order
-            else:
-                Log(f"❌ 限价单失败", "#FF0000")
-                return None
-        except Exception as e:
-            Log(f"❌ 限价单异常: {e}", "#FF0000")
-            return None
-    def place_stop_market(self, symbol_api, side, quantity, stop_price, reduce_only=False):
-        """
-        止损市价单 - 使用新的 Algo Service 端点
-        2025-12-09更新: 条件单必须使用 /fapi/v1/algoOrder
-        symbol_api: 币安API格式的币种名(如 BTCUSDT)
-        side: "BUY" 或 "SELL"
-        stop_price: 触发价格
-        reduce_only: 是否仅平仓
-        """
-        formatted_stop = self.precision.format_price(stop_price)
-        params = (
-            f"algoType=CONDITIONAL"
-            f"&symbol={symbol_api}"
-            f"&side={side}"
-            f"&type=STOP_MARKET"
-            f"&quantity={quantity}"
-            f"&triggerPrice={formatted_stop}"
-            f"&workingType=CONTRACT_PRICE"
-        )
-        if reduce_only:
-            params += "&reduceOnly=true"
-        action = "止损" if reduce_only else "加仓"
-        Log(f"✅ {action}单 {side} {quantity} @ {formatted_stop}")
-        return self._api_request(self.algo_endpoint, params, "POST")
-    def place_trailing_stop(self, symbol_api, side, quantity, callback_rate, activation_price=0, reduce_only=False):
-        """
-        跟踪止损单 - 使用新的 Algo Service 端点
-        2025-12-09更新: TRAILING_STOP_MARKET 必须使用新端点
-        symbol_api: 币安API格式的币种名
-        side: "BUY" 或 "SELL"
-        callback_rate: 回调率百分比(如 1.5 表示1.5%)
-        activation_price: 激活价格(可选,0表示立即激活)
-        reduce_only: 是否仅平仓
-        """
-        params = (
-            f"algoType=CONDITIONAL"
-            f"&symbol={symbol_api}"
-            f"&side={side}"
-            f"&type=TRAILING_STOP_MARKET"
-            f"&quantity={quantity}"
-            f"&callbackRate={callback_rate}"
-        )
-        if activation_price > 0:
-            formatted_activation = self.precision.format_price(activation_price)
-            params += f"&activatePrice={formatted_activation}"
-        else:
-            formatted_activation = 0
-        if reduce_only:
-            params += "&reduceOnly=true"
-        action = "跟踪止盈" if reduce_only else "跟踪开仓"
-        if activation_price > 0:
-            Log(f"✅ {action} {side} {quantity} 激活价={formatted_activation} 回调={callback_rate}%")
-        else:
-            Log(f"✅ {action} {side} {quantity} 回调={callback_rate}%")
-        return self._api_request(self.algo_endpoint, params, "POST")
-    def cancel_order(self, order_id):
-        """
-        撤销单个订单 - 使用FMZ平台方法
-        order_id: FMZ平台返回的订单ID
-        """
-        try:
-            result = _C(self.ex.CancelOrder, order_id)
-            if result:
-                Log(f"✅ 订单已撤销: ID={order_id}")
-                return True
-            else:
-                Log(f"⚠️ 撤单失败: ID={order_id}", "#FF9900")
-                return False
-        except Exception as e:
-            error_msg = str(e)
-            # 如果订单已成交或不存在,不算错误
-            if "Unknown order" in error_msg or "-2011" in error_msg:
-                Log(f"📭 订单不存在或已成交: ID={order_id}")
-                return True
-            else:
-                Log(f"❌ 撤单异常: {e}", "#FF0000")
-                return False
-    def cancel_all_orders(self, symbol_fmz, symbol_api):
-        """
-        撤销所有挂单 - 包括FMZ平台订单和Algo条件单
-        symbol_fmz: FMZ格式的币种名 (如 BTC_USDT)
-        symbol_api: 币安API格式的币种名 (如 BTCUSDT)
-        """
-        fmz_count = 0
-        algo_count = 0
-        # 1. 撤销FMZ平台的普通订单(市价单/限价单)
-        try:
-            self.ex.SetCurrency(symbol_fmz)
-            # 关键修复：传入symbol参数，只获取当前币种的订单，避免撤销其他币种的订单
-            orders = _C(self.ex.GetOrders, f"{symbol_fmz}.swap")
-            if orders and len(orders) > 0:
-                for order in orders:
-                    result = self.ex.CancelOrder(order['Id'])
-                    if result:
-                        fmz_count += 1
-                    Sleep(200)
-        except Exception as e:
-            pass
-        Sleep(300)
-        # 2. 撤销Algo条件单(止损单/跟踪单) - 必须指定symbol参数，否则会撤销所有币种的订单
-        try:
-            # 关键修复：params必须包含symbol参数，确保只撤销当前币种的订单
-            params = f"symbol={symbol_api}"
-            for i in range(3):
-                try:
-                    # DELETE请求会撤销指定symbol的所有条件单，不会影响其他币种
-                    ret = self.ex.IO("api", "DELETE", "/fapi/v1/algoOpenOrders", params)
-                    if ret:
-                        algo_count = 1  # Algo端点一次性撤销所有
-                        break
-                except Exception as e:
-                    error_msg = str(e)
-                    if "No open algo order" in error_msg or "-1200" in error_msg:
-                        break
-                    else:
-                        Sleep(500)
-        except Exception as e:
-            pass
-        total = fmz_count + algo_count
-        if total > 0:
-            Log(f"✅ 撤单完成 (FMZ:{fmz_count} Algo:{algo_count})")
-        return True
-    def _api_request(self, endpoint, params, method="POST"):
-        """
-        通用API请求(用于止损单和跟踪单)
-        """
-        for i in range(3):
-            try:
-                ret = self.ex.IO("api", method, endpoint, params)
-                if ret:
-                    return ret
-            except Exception as e:
-                if i == 2:  # 最后一次才报错
-                    Log(f"❌ API请求失败: {e}", "#FF0000")
-                Sleep(500)
-        return None
-
-# ============================================================
-# 3. ATR计算工具
-# ============================================================
-def get_atr(exchange, symbol, period=20, exclude_today=True):
-    """
-    获取ATR值
-    exclude_today: True时排除今日K线,使用前20日数据
-    """
-    try:
-        # 必须先设置合约类型，再设置币种
-        exchange.SetContractType("swap")
-        exchange.SetCurrency(symbol)
-        # 使用 _C() 包装 GetRecords，提供自动重试机制
-        records = _C(exchange.GetRecords, PERIOD_D1)
-        if not records or len(records) < period + 2:
-            Log(f"⚠️ K线数据不足: 需要{period+2}根，实际{len(records) if records else 0}根")
-            return None
-        atr_array = TA.ATR(records, period)
-        if exclude_today:
-            # 使用倒数第2根K线(昨日)的ATR, 排除今日未完成K线
-            return atr_array[-2]
-        else:
-            return atr_array[-1]
-    except Exception as e:
-        Log(f"❌ ATR计算失败: {e}")
-        return None
-
-# ============================================================
-# 4. 精度管理 (复用all_in_one的逻辑)
-# ============================================================
-class PrecisionManager:
-    """管理交易精度"""
-    CACHE_FILE = "precision_cache.json"
-    def __init__(self, exchange):
-        self.ex = exchange
-        self.price_precision = 2
-        self.amount_precision = 4
-        self.min_amount = 0.00001
-        self.tick_size = 0.01
-    def load_cache(self):
-        """加载缓存"""
-        try:
-            with open(self.CACHE_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    def save_cache(self, cache):
-        """保存缓存"""
-        try:
-            with open(self.CACHE_FILE, 'w') as f:
-                json.dump(cache, f, indent=2)
-        except:
-            pass
-    def set_precision(self, symbol):
-        """设置精度"""
-        cache = self.load_cache()
-        # 检查缓存
-        if symbol in cache:
-            data = cache[symbol]
-            self.price_precision = int(data['price_precision'])
-            self.amount_precision = int(data['amount_precision'])
-            self.min_amount = float(data['min_amount'])
-            self.tick_size = float(data['tick_size'])
-            Log(f"💾 [{symbol}] 从缓存加载精度")
-            return True
-        # 从交易所获取
-        try:
-            markets = _C(self.ex.GetMarkets)
-            lookup_symbol = f"{symbol}.swap"
-            target = markets.get(lookup_symbol)
-            if target:
-                self.price_precision = int(target['PricePrecision'])
-                self.amount_precision = int(target['AmountPrecision'])
-                self.min_amount = float(target['MinQty'])
-                self.tick_size = float(target['TickSize'])
-                # 保存缓存
-                cache[symbol] = {
-                    'price_precision': self.price_precision,
-                    'amount_precision': self.amount_precision,
-                    'min_amount': self.min_amount,
-                    'tick_size': self.tick_size
-                }
-                self.save_cache(cache)
-                Log(f"✅ [{symbol}] 精度获取成功")
-                return True
-            else:
-                Log(f"❌ 无法获取 {lookup_symbol} 精度")
-                return False
-        except Exception as e:
-            Log(f"❌ 精度获取失败: {e}")
-            return False
-    def format_price(self, price):
-        """格式化价格"""
-        return _N(price, self.price_precision)
-    def format_amount(self, amount):
-        """格式化数量"""
-        return _N(amount, self.amount_precision)
-
-# ============================================================
-# 5. 核心策略管理器
+# 核心策略管理器
 # ============================================================
 class OrderBasedStrategyManager:
     """基于交易所挂单的策略管理器"""
-    def __init__(self, exchange, config):
+    def __init__(self, exchange, config, utils):
         self.ex = exchange
         self.cfg = config
-        self.precision_mgr = PrecisionManager(exchange)
-        self.order_mgr = OrderManager(exchange, self.precision_mgr)
-        self.notif_mgr = NotificationManager(exchange)
+        # 从模板类库导入工具类
+        self.precision_mgr = utils['PrecisionManager'](exchange)
+        self.order_mgr = utils['OrderManager'](exchange, self.precision_mgr)
+        self.notif_mgr = utils['NotificationManager'](exchange)
+        self.atr_calc = utils['ATRCalculator']
         # 策略状态
         self.state = "IDLE"
         self.symbol = ""
@@ -425,6 +80,7 @@ class OrderBasedStrategyManager:
             'atr_value': 0,
             'entry_mode_desc': ''
         }
+
     def _reset(self):
         """重置策略状态"""
         if self.symbol:
@@ -455,12 +111,14 @@ class OrderBasedStrategyManager:
             'entry_mode_desc': ''
         }
         Log("🔄 策略已重置")
+
     def _convert_symbol_for_api(self, symbol):
         """
         转换币种格式用于API调用
         BTC_USDT -> BTCUSDT
         """
         return symbol.replace("_", "")
+
     def start_entry(self, symbol, direction_str, max_loss, entry_mode, limit_price=0, volatility_mode=1, atr_percentage=0):
         """
         启动入场流程
@@ -488,13 +146,13 @@ class OrderBasedStrategyManager:
         # 计算ATR值
         if atr_percentage > 0:
             # 使用百分比模式: ATR = 当前价格 * (百分比 / 100)
-            self.atr_val = current_price * (atr_percentage / 100)
+            self.atr_val = self.atr_calc.get_atr_by_percentage(current_price, atr_percentage)
             Log(f"📊 使用ATR百分比模式: {atr_percentage}% → ATR = {self.atr_val:.2f}")
         else:
             # 使用传统周期模式
             actual_atr_period = self.cfg['atr_period']
             Log(f"📊 使用ATR周期模式: {actual_atr_period}天")
-            self.atr_val = get_atr(self.ex, symbol, actual_atr_period, exclude_today=True)
+            self.atr_val = self.atr_calc.get_atr(self.ex, symbol, actual_atr_period, exclude_today=True)
             if not self.atr_val:
                 Log("❌ ATR计算失败")
                 self._reset()
@@ -533,6 +191,7 @@ class OrderBasedStrategyManager:
         self.state = "WAIT_CONFIRM"
         Log(f"✅ 入场参数设置完成，等待确认", "#00BFFF")
         return True
+
     def get_confirm_info(self):
         """获取确认信息"""
         if self.state != "WAIT_CONFIRM":
@@ -572,6 +231,7 @@ class OrderBasedStrategyManager:
             "⚠️  请点击【✅ 确认开仓】或【❌ 取消】"
         ])
         return lines
+
     def confirm_entry(self):
         """确认开仓"""
         if self.state != "WAIT_CONFIRM":
@@ -658,6 +318,7 @@ class OrderBasedStrategyManager:
                 self._reset()
                 return False
         return True
+
     def cancel_entry(self):
         """取消开仓"""
         if self.state not in ["WAIT_CONFIRM", "WAIT_ENTRY"]:
@@ -666,6 +327,7 @@ class OrderBasedStrategyManager:
         Log("❌ 用户取消开仓", "#FF9900")
         self._reset()
         return True
+
     def _get_position_amount(self):
         """获取当前持仓数量"""
         try:
@@ -682,6 +344,7 @@ class OrderBasedStrategyManager:
         except Exception as e:
             Log(f"⚠️ 获取持仓失败: {e}")
             return None, None
+
     def check_position_and_update_state(self):
         """
         核心逻辑: 每2秒检查仓位变化，根据变化判断状态
@@ -753,7 +416,7 @@ class OrderBasedStrategyManager:
                 self.notif_mgr.send_notification(notif_title, notif_msg)
                 Log(f"🛑 底仓止损触发，全部平仓", "#FF0000")
                 self._reset()
-            # 上次50%仓位，现在满仓
+            # 上次底仓，现在满仓
             elif abs(self.last_position_amount - expected_base) < tolerance and abs(current_amount - expected_full) < tolerance:
                 Log(f"✅ 加仓完成 {current_amount:.4f}", "#00FF00")
                 # 获取当前价格
@@ -808,6 +471,7 @@ class OrderBasedStrategyManager:
             # 再检查保护性止损触发条件（仅在有仓位情况下检查）
             elif not self.protective_sl_placed and current_amount > 0:
                 self._check_and_place_protective_sl(current_price, current_amount)
+
     def _check_and_place_protective_sl(self, current_price, current_amount):
         """
         检查并挂保护性止损单
@@ -860,6 +524,7 @@ class OrderBasedStrategyManager:
 
             self.protective_sl_placed = True
             Log(f"✅ 保护性止损体系已建立: 止损 @ {protective_sl_price}", "#00FF00")
+
     def _place_tp_orders(self, close_side):
         """
         根据波动模式挂限价止盈单
@@ -876,6 +541,7 @@ class OrderBasedStrategyManager:
             res_tp = self.order_mgr.place_limit(close_side, tp_amount, tp_price, reduce_only=True)
             if not res_tp:
                 Log(f"⚠️ 止盈{idx}挂单失败", "#FF9900")
+
     def _place_orders_after_base_entry(self):
         """
         步骤3: 底仓建立后的挂单动作
@@ -901,6 +567,7 @@ class OrderBasedStrategyManager:
         res_add = self.order_mgr.place_stop_market(self.symbol_for_api, add_side, add_amount, add_trigger_price)
         if not res_add:
             Log("⚠️ 加仓触发单挂单失败", "#FF9900")
+
     def _place_orders_after_full_position(self):
         """
         步骤4: 满仓后的挂单动作
@@ -935,6 +602,7 @@ class OrderBasedStrategyManager:
         )
         # 3. 挂限价止盈单
         self._place_tp_orders(close_side)
+
     def get_status_info(self):
         """获取状态信息"""
         lines = ["=" * 50]
@@ -971,7 +639,7 @@ class OrderBasedStrategyManager:
         return "\n".join(lines)
 
 # ============================================================
-# 6. 主程序
+# 主程序
 # ============================================================
 def main():
     global exchange
@@ -980,8 +648,19 @@ def main():
         return
     Log("🚀 基于挂单的策略启动", "#00FF00")
     exchange.SetContractType("swap")
+
+    # 引用模板类库 - 在FMZ平台上需要在策略设置中添加模板依赖
+    # 本地测试时，直接导入
+    try:
+        # FMZ平台环境：使用 ext 前缀引用模板
+        utils = ext.TradingUtils()
+    except:
+        # 本地测试环境：直接导入模块
+        import trading_utils
+        utils = trading_utils.init()
+
     # 初始化策略管理器
-    strategy = OrderBasedStrategyManager(exchange, STRATEGY_CONFIG)
+    strategy = OrderBasedStrategyManager(exchange, STRATEGY_CONFIG, utils)
     # UI按钮配置
     btn_trade = {
         "type": "button",
