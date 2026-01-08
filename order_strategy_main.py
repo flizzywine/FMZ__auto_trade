@@ -345,132 +345,183 @@ class OrderBasedStrategyManager:
             Log(f"⚠️ 获取持仓失败: {e}")
             return None, None
 
+    def _send_stop_loss_notification(self, sl_price):
+        """发送止损通知"""
+        direction_str = "做多🟢" if self.direction == 1 else "做空🔴"
+        loss_pct = ((sl_price - self.base_price) / self.base_price * 100) * self.direction
+        loss_amount = (sl_price - self.base_price) * self.last_position_amount * self.direction
+
+        notif_title = f"🛑 底仓止损触发 - {self.symbol}"
+        notif_msg = (
+            f"币种: {self.symbol}\n"
+            f"方向: {direction_str}\n"
+            f"底仓价格: {self.base_price:.2f}\n"
+            f"止损价格: {sl_price:.2f}\n"
+            f"亏损率: {loss_pct:+.2f}%\n"
+            f"亏损金额: {loss_amount:+.2f} USDT\n"
+            f"时间: {_D()}"
+        )
+        self.notif_mgr.send_notification(notif_title, notif_msg)
+
+    def _send_base_entry_notification(self, current_amount, current_price):
+        """发送底仓开仓通知"""
+        direction_str = "做多🟢" if self.direction == 1 else "做空🔴"
+        notif_title = f"✅ 底仓开仓成功 - {self.symbol}"
+        notif_msg = (
+            f"币种: {self.symbol}\n"
+            f"方向: {direction_str}\n"
+            f"开仓价格: {current_price:.2f}\n"
+            f"底仓数量: {current_amount:.4f}\n"
+            f"底仓价值: {current_amount * current_price:.2f} USDT\n"
+            f"ATR: {self.atr_val:.2f}\n"
+            f"时间: {_D()}"
+        )
+        self.notif_mgr.send_notification(notif_title, notif_msg)
+
+    def _send_add_position_notification(self, current_amount, current_price):
+        """发送加仓通知"""
+        direction_str = "做多🟢" if self.direction == 1 else "做空🔴"
+        profit_pct = ((current_price - self.base_price) / self.base_price * 100) * self.direction
+        notif_title = f"✅ 加仓成功 - {self.symbol}"
+        notif_msg = (
+            f"币种: {self.symbol}\n"
+            f"方向: {direction_str}\n"
+            f"底仓价格: {self.base_price:.2f}\n"
+            f"当前价格: {current_price:.2f}\n"
+            f"浮盈率: {profit_pct:+.2f}%\n"
+            f"满仓数量: {current_amount:.4f}\n"
+            f"满仓价值: {current_amount * current_price:.2f} USDT\n"
+            f"时间: {_D()}"
+        )
+        self.notif_mgr.send_notification(notif_title, notif_msg)
+
+    def _send_close_position_notification(self, close_price):
+        """发送平仓通知"""
+        direction_str = "做多🟢" if self.direction == 1 else "做空🔴"
+        profit_pct = ((close_price - self.base_price) / self.base_price * 100) * self.direction
+        profit_amount = (close_price - self.base_price) * self.last_position_amount * self.direction
+
+        result_emoji = "✅" if profit_amount > 0 else "❌"
+        notif_title = f"{result_emoji} 平仓完成 - {self.symbol}"
+        notif_msg = (
+            f"币种: {self.symbol}\n"
+            f"方向: {direction_str}\n"
+            f"底仓价格: {self.base_price:.2f}\n"
+            f"平仓价格: {close_price:.2f}\n"
+            f"盈亏率: {profit_pct:+.2f}%\n"
+            f"盈亏金额: {profit_amount:+.2f} USDT\n"
+            f"持仓数量: {self.last_position_amount:.4f}\n"
+            f"时间: {_D()}"
+        )
+        self.notif_mgr.send_notification(notif_title, notif_msg)
+
+    def _handle_wait_entry_state(self, current_amount, current_price, expected_base, tolerance):
+        """
+        处理 WAIT_ENTRY 状态: 等待底仓建立
+        """
+        # 检查异常情况：上次有仓位但现在归零（手动平仓或其他原因）
+        if self.last_position_amount > 0 and current_amount == 0:
+            Log(f"⚠️ 入场阶段仓位归零，策略重置", "#FF9900")
+            self._reset()
+            return
+
+        # 上次无仓位，现在有底仓
+        if self.last_position_amount == 0 and abs(current_amount - expected_base) < tolerance:
+            Log(f"✅ 底仓建立 {current_amount:.4f} @ {current_price:.2f}", "#00FF00")
+            self.base_price = current_price
+            self.last_position_amount = current_amount
+            self.state = "ENTRY_DONE"
+
+            # 发送开仓通知
+            self._send_base_entry_notification(current_amount, current_price)
+
+            # 执行步骤3的挂单动作
+            self._place_orders_after_base_entry()
+
+    def _handle_entry_done_state(self, current_amount, current_price, expected_base, expected_full, tolerance):
+        """
+        处理 ENTRY_DONE 状态: 底仓已建立，等待加仓或止损
+        """
+        # 检查仓位归零（止损触发）
+        if self.last_position_amount > 0 and current_amount == 0:
+            ticker = _C(self.ex.GetTicker)
+            sl_price = ticker['Last']
+
+            # 发送止损通知
+            self._send_stop_loss_notification(sl_price)
+
+            Log(f"🛑 底仓止损触发，全部平仓", "#FF0000")
+            self._reset()
+            return
+
+        # 上次底仓，现在满仓（加仓完成）
+        if abs(self.last_position_amount - expected_base) < tolerance and abs(current_amount - expected_full) < tolerance:
+            Log(f"✅ 加仓完成 {current_amount:.4f}", "#00FF00")
+
+            # 获取当前价格
+            ticker = _C(self.ex.GetTicker)
+            current_price = ticker['Last']
+
+            # 发送加仓通知
+            self._send_add_position_notification(current_amount, current_price)
+
+            self.last_position_amount = current_amount
+            self.state = "WAIT_EXIT"
+
+            # 执行步骤4的挂单动作
+            self._place_orders_after_full_position()
+
+    def _handle_wait_exit_state(self, current_amount, current_price):
+        """
+        处理 WAIT_EXIT 状态: 满仓已建立，等待平仓或保护性止损
+        """
+        # 先检查仓位归零（最高优先级）
+        if self.last_position_amount > 0 and current_amount == 0:
+            ticker = _C(self.ex.GetTicker)
+            close_price = ticker['Last']
+
+            # 发送平仓通知
+            self._send_close_position_notification(close_price)
+
+            Log(f"✅ 全部平仓，策略完成", "#00FF00")
+            self._reset()
+            return
+
+        # 再检查保护性止损触发条件（仅在有仓位情况下检查）
+        if not self.protective_sl_placed and current_amount > 0:
+            self._check_and_place_protective_sl(current_price, current_amount)
+
     def check_position_and_update_state(self):
         """
         核心逻辑: 每2秒检查仓位变化，根据变化判断状态
         """
         if self.state == "IDLE" or self.state == "WAIT_CONFIRM":
             return
+
         # 确保使用正确的币种
         if self.symbol:
             self.ex.SetContractType("swap")
             self.ex.SetCurrency(self.symbol)
+
         # 获取当前持仓
         current_amount, current_price = self._get_position_amount()
         if current_amount is None:
             return  # 获取失败，跳过本轮
+
         # 计算预期的底仓和满仓数量
         expected_base = self.precision_mgr.format_amount(self.full_amount * self.cfg['base_position_pct'])
         expected_full = self.full_amount
+
         # 定义一个容差 (考虑精度误差)
         tolerance = self.precision_mgr.min_amount * 2
-        # ===== 状态3: WAIT_ENTRY -> ENTRY_DONE =====
+
+        # 根据当前状态分发到对应的处理函数
         if self.state == "WAIT_ENTRY":
-            # 检查异常情况：上次有仓位但现在归零（手动平仓或其他原因）
-            if self.last_position_amount > 0 and current_amount == 0:
-                Log(f"⚠️ 入场阶段仓位归零，策略重置", "#FF9900")
-                self._reset()
-            # 上次无仓位，现在有50%仓位
-            elif self.last_position_amount == 0 and abs(current_amount - expected_base) < tolerance:
-                Log(f"✅ 底仓建立 {current_amount:.4f} @ {current_price:.2f}", "#00FF00")
-                self.base_price = current_price
-                self.last_position_amount = current_amount
-                self.state = "ENTRY_DONE"
-                # 发送开仓通知
-                direction_str = "做多🟢" if self.direction == 1 else "做空🔴"
-                notif_title = f"✅ 底仓开仓成功 - {self.symbol}"
-                notif_msg = (
-                    f"币种: {self.symbol}\n"
-                    f"方向: {direction_str}\n"
-                    f"开仓价格: {current_price:.2f}\n"
-                    f"底仓数量: {current_amount:.4f}\n"
-                    f"底仓价值: {current_amount * current_price:.2f} USDT\n"
-                    f"ATR: {self.atr_val:.2f}\n"
-                    f"时间: {_D()}"
-                )
-                self.notif_mgr.send_notification(notif_title, notif_msg)
-                # 执行步骤3的挂单动作
-                self._place_orders_after_base_entry()
-        # ===== 状态4: ENTRY_DONE -> WAIT_EXIT 或 归零 =====
+            self._handle_wait_entry_state(current_amount, current_price, expected_base, tolerance)
         elif self.state == "ENTRY_DONE":
-            # 检查仓位归零（止损触发）
-            if self.last_position_amount > 0 and current_amount == 0:
-                # 获取止损价格
-                ticker = _C(self.ex.GetTicker)
-                sl_price = ticker['Last']
-                # 计算止损损失
-                direction_str = "做多🟢" if self.direction == 1 else "做空🔴"
-                loss_pct = ((sl_price - self.base_price) / self.base_price * 100) * self.direction
-                loss_amount = (sl_price - self.base_price) * self.last_position_amount * self.direction
-                # 发送止损通知
-                notif_title = f"🛑 底仓止损触发 - {self.symbol}"
-                notif_msg = (
-                    f"币种: {self.symbol}\n"
-                    f"方向: {direction_str}\n"
-                    f"底仓价格: {self.base_price:.2f}\n"
-                    f"止损价格: {sl_price:.2f}\n"
-                    f"亏损率: {loss_pct:+.2f}%\n"
-                    f"亏损金额: {loss_amount:+.2f} USDT\n"
-                    f"时间: {_D()}"
-                )
-                self.notif_mgr.send_notification(notif_title, notif_msg)
-                Log(f"🛑 底仓止损触发，全部平仓", "#FF0000")
-                self._reset()
-            # 上次底仓，现在满仓
-            elif abs(self.last_position_amount - expected_base) < tolerance and abs(current_amount - expected_full) < tolerance:
-                Log(f"✅ 加仓完成 {current_amount:.4f}", "#00FF00")
-                # 获取当前价格
-                ticker = _C(self.ex.GetTicker)
-                current_price = ticker['Last']
-                # 发送加仓通知
-                direction_str = "做多🟢" if self.direction == 1 else "做空🔴"
-                profit_pct = ((current_price - self.base_price) / self.base_price * 100) * self.direction
-                notif_title = f"✅ 加仓成功 - {self.symbol}"
-                notif_msg = (
-                    f"币种: {self.symbol}\n"
-                    f"方向: {direction_str}\n"
-                    f"底仓价格: {self.base_price:.2f}\n"
-                    f"当前价格: {current_price:.2f}\n"
-                    f"浮盈率: {profit_pct:+.2f}%\n"
-                    f"满仓数量: {current_amount:.4f}\n"
-                    f"满仓价值: {current_amount * current_price:.2f} USDT\n"
-                    f"时间: {_D()}"
-                )
-                self.notif_mgr.send_notification(notif_title, notif_msg)
-                self.last_position_amount = current_amount
-                self.state = "WAIT_EXIT"
-                # 执行步骤4的挂单动作
-                self._place_orders_after_full_position()
-        # ===== 状态5: WAIT_EXIT -> IDLE =====
+            self._handle_entry_done_state(current_amount, current_price, expected_base, expected_full, tolerance)
         elif self.state == "WAIT_EXIT":
-            # 先检查仓位归零（最高优先级）
-            if self.last_position_amount > 0 and current_amount == 0:
-                # 获取平仓价格
-                ticker = _C(self.ex.GetTicker)
-                close_price = ticker['Last']
-                # 计算盈亏
-                direction_str = "做多🟢" if self.direction == 1 else "做空🔴"
-                profit_pct = ((close_price - self.base_price) / self.base_price * 100) * self.direction
-                profit_amount = (close_price - self.base_price) * self.last_position_amount * self.direction
-                # 发送平仓通知
-                result_emoji = "✅" if profit_amount > 0 else "❌"
-                notif_title = f"{result_emoji} 平仓完成 - {self.symbol}"
-                notif_msg = (
-                    f"币种: {self.symbol}\n"
-                    f"方向: {direction_str}\n"
-                    f"底仓价格: {self.base_price:.2f}\n"
-                    f"平仓价格: {close_price:.2f}\n"
-                    f"盈亏率: {profit_pct:+.2f}%\n"
-                    f"盈亏金额: {profit_amount:+.2f} USDT\n"
-                    f"持仓数量: {self.last_position_amount:.4f}\n"
-                    f"时间: {_D()}"
-                )
-                self.notif_mgr.send_notification(notif_title, notif_msg)
-                Log(f"✅ 全部平仓，策略完成", "#00FF00")
-                self._reset()
-            # 再检查保护性止损触发条件（仅在有仓位情况下检查）
-            elif not self.protective_sl_placed and current_amount > 0:
-                self._check_and_place_protective_sl(current_price, current_amount)
+            self._handle_wait_exit_state(current_amount, current_price)
 
     def _check_and_place_protective_sl(self, current_price, current_amount):
         """
