@@ -75,6 +75,8 @@ class LimitOrderStrategyManager:
         self.pending_confirm_info = {}
         # 保护性止损标志
         self.protective_sl_placed = False
+        # 当前止损位（用于强制平仓检查）
+        self.current_stop_loss_price = 0
         # 入场配置信息（用于策略状态展示）
         self.entry_config = {
             'volatility_desc': '',
@@ -130,6 +132,7 @@ class LimitOrderStrategyManager:
         self.last_position_amount = 0
         self.pending_confirm_info = {}
         self.protective_sl_placed = False
+        self.current_stop_loss_price = 0
         self.entry_config = {
             'volatility_desc': '',
             'atr_mode': '',
@@ -466,7 +469,7 @@ class LimitOrderStrategyManager:
             Log(f"⚠️ 入场阶段仓位归零，策略重置", "#FF9900")
             self._reset()
             return
-        
+
         # 2. 监控入场跟踪（仅跟踪模式）
         track = self.entry_tracking
         # 模式4: 限价激活跟踪 - 先检查是否触达激活价
@@ -519,8 +522,9 @@ class LimitOrderStrategyManager:
                     Log("❌ 限价单提交失败", "#FF0000")
 
 
-        # 3. 上次无仓位，现在有底仓
-        if self.last_position_amount == 0 and abs(current_amount - expected_base) < tolerance:
+        # 3. 判断底仓是否建立: 改用市场价格判断而非仓位
+        # 如果有仓位且上次无仓位，说明刚刚建立仓位，记录底仓价格并转入ENTRY_DONE状态
+        if self.last_position_amount == 0 and current_amount > 0:
             Log(f"✅ 底仓建立 {current_amount:.4f} @ {position_price:.2f}", "#00FF00")
             self.base_price = position_price
             self.last_position_amount = current_amount
@@ -550,7 +554,7 @@ class LimitOrderStrategyManager:
             Log(f"🛑 底仓止损触发，全部平仓", "#FF0000")
             self._reset()
             return
-        
+
         # 2. 监控加仓触发
         if self.add_position_monitor['trigger_price'] > 0 and not self.add_position_monitor['triggered']:
             trigger_price = self.add_position_monitor['trigger_price']
@@ -581,8 +585,9 @@ class LimitOrderStrategyManager:
                     Log("❌ 加仓限价单提交失败", "#FF0000")
 
 
-        # 3. 上次底仓，现在满仓（加仓完成）
-        if abs(self.last_position_amount - expected_base) < tolerance and abs(current_amount - expected_full) < tolerance:
+        # 3. 判断加仓是否完成: 改用加仓限价单已触发 + 仓位增加来判断
+        # 只要加仓单已触发，且当前仓位大于底仓，说明加仓已完成（可能部分成交）
+        if self.add_position_monitor['triggered'] and current_amount > self.last_position_amount:
             Log(f"✅ 加仓完成 {current_amount:.4f}", "#00FF00")
 
             # 获取当前价格
@@ -702,6 +707,45 @@ class LimitOrderStrategyManager:
         # 定义一个容差 (考虑精度误差)
         tolerance = self.precision_mgr.min_amount * 2
 
+        # ========== 强制止损检查 ==========
+        # 在所有状态下都要检查是否触发当前止损位
+        if self.current_stop_loss_price > 0 and current_amount > 0:
+            sl_triggered = False
+            if self.direction == 1:  # 做多：价格跌破止损位
+                sl_triggered = (market_price <= self.current_stop_loss_price)
+            else:  # 做空：价格涨破止损位
+                sl_triggered = (market_price >= self.current_stop_loss_price)
+
+            if sl_triggered:
+                # 强制平仓
+                Log(f"🚨 触发当前止损位 {self.current_stop_loss_price}，强制平仓", "#FF0000")
+                # 获取当前价格用于通知
+                ticker = _C(self.ex.GetTicker)
+                sl_price = ticker['Last']
+
+                # 发送止损通知
+                self._send_stop_loss_notification(sl_price)
+
+                # 撤销所有订单并强制市价平仓
+                self.order_mgr.cancel_all_orders(self.symbol, self.symbol_for_api)
+                Sleep(500)
+
+                # 强制市价平仓
+                close_side = "SELL" if self.direction == 1 else "BUY"
+                current_amount_formatted = self.precision_mgr.format_amount(current_amount)
+                res_close = self.order_mgr.place_market(close_side, current_amount_formatted)
+                if res_close:
+                    Log(f"✅ 强制市价平仓订单已提交: {res_close}")
+                else:
+                    Log("❌ 强制市价平仓订单提交失败", "#FF0000")
+
+                # 等待平仓完成
+                Sleep(2000)
+
+                # 重置策略
+                self._reset()
+                return
+
         # ========== 原有状态处理 ==========
         # 根据当前状态分发到对应的处理函数
         if self.state == "WAIT_ENTRY":
@@ -714,9 +758,9 @@ class LimitOrderStrategyManager:
     def _check_and_place_protective_sl(self, current_price, current_amount):
         """
         检查并挂保护性止损单
-        当底仓浮盈达到 +0.2 ATR 时，撤销所有订单并重新挂单：
+        当底仓浮盈达到 +0.2 ATR 时，直接挂保护性止损单：
         - 新的保护性止损单（-0.2 ATR，满仓）
-        - 重新挂所有限价止盈单（参数不变）
+        - 不撤销原有订单，让原止损单继续存在
         """
         # 计算触发价格 (底仓价格 + 方向 * 0.2 ATR)
         trigger_price = self.base_price + (self.direction * self.cfg['protective_sl_trigger'] * self.atr_val)
@@ -726,12 +770,9 @@ class LimitOrderStrategyManager:
         else:  # 做空
             reached = current_price <= trigger_price
         if reached:
-            Log(f"🛡️ 底仓浮盈达到 +{self.cfg['protective_sl_trigger']} ATR，更新为保护性止损", "#00BFFF")
-            # 1. 撤销所有订单（FMZ订单和Algo订单）
-            self.order_mgr.cancel_all_orders(self.symbol, self.symbol_for_api)
-            Sleep(500)
+            Log(f"🛡️ 底仓浮盈达到 +{self.cfg['protective_sl_trigger']} ATR，挂保护性止损单", "#00BFFF")
 
-            # 2. 挂保护性止损单 (-0.2 ATR, 使用当前确切的仓位数量)
+            # 直接挂保护性止损单 (-0.2 ATR, 使用当前确切的仓位数量)
             protective_sl_price = self.base_price - (self.direction * self.cfg['protective_sl_offset'] * self.atr_val)
             protective_sl_price = self.precision_mgr.format_price(protective_sl_price)
             sl_side = "SELL" if self.direction == 1 else "BUY"
@@ -739,12 +780,11 @@ class LimitOrderStrategyManager:
             current_amount_formatted = self.precision_mgr.format_amount(current_amount)
             self.order_mgr.place_stop_market(self.symbol_for_api, sl_side, current_amount_formatted, protective_sl_price, reduce_only=True)
 
-            # 3. 重新挂限价止盈单
-            close_side = "SELL" if self.direction == 1 else "BUY"
-            self._place_tp_orders(close_side)
+            # 更新当前止损位（使用更有利的保护性止损位）
+            self.current_stop_loss_price = protective_sl_price
 
             self.protective_sl_placed = True
-            Log(f"✅ 保护性止损体系已建立: 止损 @ {protective_sl_price}", "#00FF00")
+            Log(f"✅ 保护性止损单已挂: 止损 @ {protective_sl_price}，原止损单保持不变", "#00FF00")
 
     def _place_tp_orders(self, close_side):
         """
@@ -779,6 +819,9 @@ class LimitOrderStrategyManager:
         if not res_sl:
             Log("⚠️ 止损单挂单失败", "#FF9900")
 
+        # 记录当前止损位
+        self.current_stop_loss_price = sl_price
+
         # 启动加仓监控 (程序内监控)
         add_trigger_price = self.base_price + (self.direction * self.cfg['add_trigger'] * self.atr_val)
         add_trigger_price = self.precision_mgr.format_price(add_trigger_price)
@@ -806,6 +849,9 @@ class LimitOrderStrategyManager:
         full_sl_price = self.precision_mgr.format_price(full_sl_price)
         sl_side = "SELL" if self.direction == 1 else "BUY"
         self.order_mgr.place_stop_market(self.symbol_for_api, sl_side, self.full_amount, full_sl_price, reduce_only=True)
+
+        # 更新当前止损位
+        self.current_stop_loss_price = full_sl_price
 
         # 2. 启动跟踪止盈监控 (激活价0.28 ATR, 回调0.15 ATR)
         trail_activation = self.base_price + (self.direction * self.cfg['trail_activation'] * self.atr_val)
