@@ -86,10 +86,10 @@ class LimitOrderStrategyManager:
         # ========== 程序内监控相关变量 ==========
         # 入场跟踪监控
         self.entry_tracking = {
-            'active': False,           # 是否激活跟踪监控
+            'is_monitoring': False,    # 是否正在进行跟踪监控
             'price_extreme': 0,        # 价格极值(做多=最低价, 做空=最高价)
             'callback_distance': 0,    # 回调距离(绝对值)
-            'activated': False,        # 是否已经达到过激活价(仅限价激活模式)
+            'limit_order_placed': False, # 限价单是否已提交
         }
 
         # 加仓监控
@@ -100,9 +100,9 @@ class LimitOrderStrategyManager:
 
         # 跟踪止盈监控
         self.trailing_tp_monitor = {
-            'active': False,           # 是否激活跟踪监控
+            'is_monitoring': False,    # 是否正在进行跟踪监控
             'activation_price': 0,     # 激活价格
-            'activated': False,        # 是否已激活
+            'limit_order_placed': False, # 限价单是否已提交
             'price_extreme': 0,        # 价格极值(做多=最高价, 做空=最低价)
             'callback_distance': 0,    # 回调距离(绝对值)
         }
@@ -138,19 +138,19 @@ class LimitOrderStrategyManager:
         }
         # 重置监控变量
         self.entry_tracking = {
-            'active': False,
+            'is_monitoring': False,
             'price_extreme': 0,
             'callback_distance': 0,
-            'activated': False,
+            'limit_order_placed': False,
         }
         self.add_position_monitor = {
             'trigger_price': 0,
             'triggered': False,
         }
         self.trailing_tp_monitor = {
-            'active': False,
+            'is_monitoring': False,
             'activation_price': 0,
-            'activated': False,
+            'limit_order_placed': False,
             'price_extreme': 0,
             'callback_distance': 0,
         }
@@ -329,10 +329,10 @@ class LimitOrderStrategyManager:
 
             # 初始化跟踪监控
             self.entry_tracking = {
-                'active': True,
+                'is_monitoring': True,  # 市价激活模式：立即开始监控
                 'price_extreme': current_price,  # 初始极值为当前价
                 'callback_distance': callback_distance,
-                'activated': True,  # 市价激活模式默认已激活
+                'limit_order_placed': False,  # 限价单尚未提交
             }
 
             Log(f"📊 入场跟踪监控已启动: 回调距离={callback_distance:.2f}, 当前价格={current_price:.2f}")
@@ -346,10 +346,10 @@ class LimitOrderStrategyManager:
 
             # 初始化跟踪监控
             self.entry_tracking = {
-                'active': False,
+                'is_monitoring': False,  # 限价激活模式：等待激活价触达
                 'price_extreme': 0,  # 极值等激活后再设置
                 'callback_distance': callback_distance,
-                'activated': False,  # 等待价格触达激活价
+                'limit_order_placed': False,  # 限价单尚未提交
             }
 
             Log(f"📊 入场跟踪监控已启动: 激活价={self.entry_limit_price}, 回调距离={callback_distance:.2f}")
@@ -454,10 +454,12 @@ class LimitOrderStrategyManager:
         self.notif_mgr.send_notification(notif_title, notif_msg)
 
 
-    def _handle_wait_entry_state(self, current_amount, current_price, expected_base, tolerance):
+    def _handle_wait_entry_state(self, current_amount, position_price, market_price, expected_base, tolerance):
         """
         处理 WAIT_ENTRY 状态: 等待底仓建立
         包含入场跟踪监控逻辑（模式3/4）
+        position_price: 持仓均价
+        market_price: 实时市场价格
         """
         # 1. 检查异常情况：上次有仓位但现在归零（手动平仓或其他原因）
         if self.last_position_amount > 0 and current_amount == 0:
@@ -468,72 +470,74 @@ class LimitOrderStrategyManager:
         # 2. 监控入场跟踪（仅跟踪模式）
         track = self.entry_tracking
         # 模式4: 限价激活跟踪 - 先检查是否触达激活价
-        if self.entry_mode == 4 and not track['activated']:
+        if self.entry_mode == 4 and track['is_monitoring'] == False and track['limit_order_placed'] == False:
             if self.direction == 1:  # 做多：价格跌破激活价
-                if current_price <= self.entry_limit_price:
-                    track['active'] = True
-                    track['price_extreme'] = current_price
-                    Log(f"✅ 激活价已触达，开始跟踪: 激活价={self.entry_limit_price}, 当前价={current_price}", "#00FF00")
+                if market_price <= self.entry_limit_price:
+                    track['is_monitoring'] = True
+                    track['price_extreme'] = market_price
+                    Log(f"✅ 激活价已触达，开始跟踪: 激活价={self.entry_limit_price}, 当前价={market_price}", "#00FF00")
             else:  # 做空：价格涨破激活价
-                if current_price >= self.entry_limit_price:       
-                    track['active'] = True
-                    track['price_extreme'] = current_price
-                    Log(f"✅ 激活价已触达，开始跟踪: 激活价={self.entry_limit_price}, 当前价={current_price}", "#00FF00")
+                if market_price >= self.entry_limit_price:
+                    track['is_monitoring'] = True
+                    track['price_extreme'] = market_price
+                    Log(f"✅ 激活价已触达，开始跟踪: 激活价={self.entry_limit_price}, 当前价={market_price}", "#00FF00")
 
-        if self.entry_mode in [3, 4] and self.entry_tracking['active'] and not track['activated']:
+        # 模式3和4: 如果跟踪已激活且未下单，则更新极值并检查回调
+        if self.entry_mode in [3, 4] and track['is_monitoring'] == True and track['limit_order_placed'] == False:
             # 更新价格极值
             if self.direction == 1:  # 做多：跟踪最低价
-                if current_price < track['price_extreme']:
-                    track['price_extreme'] = current_price
+                if market_price < track['price_extreme']:
+                    track['price_extreme'] = market_price
             else:  # 做空：跟踪最高价
-                if current_price > track['price_extreme']:
-                    track['price_extreme'] = current_price
-                    
+                if market_price > track['price_extreme']:
+                    track['price_extreme'] = market_price
+
             # 检查是否回调到位
             callback_happened = False
             if self.direction == 1:  # 做多：从最低点回调
                 trigger_price = track['price_extreme'] + track['callback_distance']
-                callback_happened = (current_price >= trigger_price)
+                callback_happened = (market_price >= trigger_price)
             else:  # 做空：从最高点回调
                 trigger_price = track['price_extreme'] - track['callback_distance']
-                callback_happened = (current_price <= trigger_price)
+                callback_happened = (market_price <= trigger_price)
 
             if callback_happened:
-                Log(f"✅ 回调到位，触发限价单入场: 极值={track['price_extreme']:.2f}, 当前价={current_price:.2f}", "#00FF00")
+                Log(f"✅ 回调到位，触发限价单入场: 极值={track['price_extreme']:.2f}, 当前价={market_price:.2f}", "#00FF00")
 
                 # 计算限价单价格和数量
                 base_amount = self.precision_mgr.format_amount(self.full_amount * self.cfg['base_position_pct'])
                 side = "BUY" if self.direction == 1 else "SELL"
-                limit_price = trigger_price
-                limit_price = self.precision_mgr.format_price(limit_price)
+                # 使用当前市场价格作为限价单价格，确保能成交
+                limit_price = self.precision_mgr.format_price(market_price)
 
                 res = self.order_mgr.place_limit(side, base_amount, limit_price)
                 if res:
                     Log(f"✅ 限价单已提交: {res}, 价格={limit_price}")
-                    # 关闭跟踪监控，等待订单成交
-                    self.entry_tracking['active'] = False
-                    self.entry_tracking['activated'] = True
+                    # 标记已下单，避免重复下单
+                    self.entry_tracking['limit_order_placed'] = True
                 else:
                     Log("❌ 限价单提交失败", "#FF0000")
 
-        
+
         # 3. 上次无仓位，现在有底仓
         if self.last_position_amount == 0 and abs(current_amount - expected_base) < tolerance:
-            Log(f"✅ 底仓建立 {current_amount:.4f} @ {current_price:.2f}", "#00FF00")
-            self.base_price = current_price
+            Log(f"✅ 底仓建立 {current_amount:.4f} @ {position_price:.2f}", "#00FF00")
+            self.base_price = position_price
             self.last_position_amount = current_amount
             self.state = "ENTRY_DONE"
 
             # 发送开仓通知
-            self._send_base_entry_notification(current_amount, current_price)
+            self._send_base_entry_notification(current_amount, position_price)
 
             # 执行步骤3的挂单动作
             self._place_orders_after_base_entry()
 
-    def _handle_entry_done_state(self, current_amount, current_price, expected_base, expected_full, tolerance):
+    def _handle_entry_done_state(self, current_amount, position_price, market_price, expected_base, expected_full, tolerance):
         """
         处理 ENTRY_DONE 状态: 底仓已建立，等待加仓或止损
         包含加仓监控逻辑
+        position_price: 持仓均价
+        market_price: 实时市场价格
         """
         # 1. 检查仓位归零（止损触发）
         if self.last_position_amount > 0 and current_amount == 0:
@@ -553,21 +557,21 @@ class LimitOrderStrategyManager:
             triggered = False
 
             if self.direction == 1:  # 做多：价格突破触发价
-                triggered = (current_price >= trigger_price)
+                triggered = (market_price >= trigger_price)
             else:  # 做空：价格跌破触发价
-                triggered = (current_price <= trigger_price)
+                triggered = (market_price <= trigger_price)
 
             if triggered:
-                Log(f"✅ 加仓触发: 触发价={trigger_price:.2f}, 当前价={current_price:.2f}", "#00FF00")
+                Log(f"✅ 加仓触发: 触发价={trigger_price:.2f}, 当前价={market_price:.2f}", "#00FF00")
 
                 # 计算加仓数量和限价单价格
                 add_amount = self.precision_mgr.format_amount(self.full_amount * self.cfg['add_position_pct'])
                 add_side = "BUY" if self.direction == 1 else "SELL"
 
-                # 限价单价格
-                limit_price = trigger_price
-                limit_price = self.precision_mgr.format_price(limit_price)
+                # 使用当前市场价格作为限价单价格，确保能成交
+                limit_price = self.precision_mgr.format_price(market_price)
 
+                # 加仓不应使用reduce_only，因为是增加仓位
                 res = self.order_mgr.place_limit(add_side, add_amount, limit_price)
                 if res:
                     Log(f"✅ 加仓限价单已提交: {res}, 价格={limit_price}")
@@ -594,10 +598,12 @@ class LimitOrderStrategyManager:
             # 执行步骤4的挂单动作
             self._place_orders_after_full_position()
 
-    def _handle_wait_exit_state(self, current_amount, current_price):
+    def _handle_wait_exit_state(self, current_amount, position_price, market_price):
         """
         处理 WAIT_EXIT 状态: 满仓已建立，等待平仓或保护性止损
         包含跟踪止盈监控逻辑
+        position_price: 持仓均价
+        market_price: 实时市场价格
         """
         # 1. 检查仓位归零（最高优先级）
         if self.last_position_amount > 0 and current_amount == 0:
@@ -614,58 +620,58 @@ class LimitOrderStrategyManager:
         # 2. 监控跟踪止盈
         # 先检查是否触达激活价
         monitor = self.trailing_tp_monitor
-        if not monitor['active'] and not monitor['activated']:
+        if monitor['is_monitoring'] == False and monitor['limit_order_placed'] == False:
             if self.direction == 1:  # 做多：价格涨破激活价
-                if current_price >= monitor['activation_price']:
-                    monitor['active'] = True
-                    monitor['price_extreme'] = current_price
-                    Log(f"✅ 跟踪止盈激活: 激活价={monitor['activation_price']:.2f}, 当前价={current_price:.2f}", "#00FF00")
+                if market_price >= monitor['activation_price']:
+                    monitor['is_monitoring'] = True
+                    monitor['price_extreme'] = market_price
+                    Log(f"✅ 跟踪止盈激活: 激活价={monitor['activation_price']:.2f}, 当前价={market_price:.2f}", "#00FF00")
             else:  # 做空：价格跌破激活价
-                if current_price <= monitor['activation_price']:
-                    monitor['active'] = True
-                    monitor['price_extreme'] = current_price
-                    Log(f"✅ 跟踪止盈激活: 激活价={monitor['activation_price']:.2f}, 当前价={current_price:.2f}", "#00FF00")
+                if market_price <= monitor['activation_price']:
+                    monitor['is_monitoring'] = True
+                    monitor['price_extreme'] = market_price
+                    Log(f"✅ 跟踪止盈激活: 激活价={monitor['activation_price']:.2f}, 当前价={market_price:.2f}", "#00FF00")
 
         # 已激活，更新价格极值并检查回调
-        if monitor['active'] and not monitor['activated']:
+        if monitor['is_monitoring'] == True and monitor['limit_order_placed'] == False:
             # 更新价格极值
             if self.direction == 1:  # 做多：跟踪最高价
-                if current_price > monitor['price_extreme']:
-                    monitor['price_extreme'] = current_price
+                if market_price > monitor['price_extreme']:
+                    monitor['price_extreme'] = market_price
             else:  # 做空：跟踪最低价
-                if current_price < monitor['price_extreme']:
-                    monitor['price_extreme'] = current_price
+                if market_price < monitor['price_extreme']:
+                    monitor['price_extreme'] = market_price
 
             # 检查是否回调到位
             callback_happened = False
             if self.direction == 1:  # 做多：从最高点回调
                 trigger_price = monitor['price_extreme'] - monitor['callback_distance']
-                callback_happened = (current_price <= trigger_price)
+                callback_happened = (market_price <= trigger_price)
             else:  # 做空：从最低点回调
                 trigger_price = monitor['price_extreme'] + monitor['callback_distance']
-                callback_happened = (current_price >= trigger_price)
+                callback_happened = (market_price >= trigger_price)
 
             if callback_happened:
-                Log(f"✅ 跟踪止盈回调到位，触发限价单平仓: 极值={monitor['price_extreme']:.2f}, 当前价={current_price:.2f}", "#00FF00")
+                Log(f"✅ 跟踪止盈回调到位，触发限价单平仓: 极值={monitor['price_extreme']:.2f}, 当前价={market_price:.2f}", "#00FF00")
 
                 # 计算限价单数量和价格
                 close_side = "SELL" if self.direction == 1 else "BUY"
                 current_amount_formatted = self.precision_mgr.format_amount(current_amount)
-                limit_price = self.precision_mgr.format_price(trigger_price)
+                # 使用当前市场价格作为限价单价格，确保能成交
+                limit_price = self.precision_mgr.format_price(market_price)
 
                 res = self.order_mgr.place_limit(close_side, current_amount_formatted, limit_price, reduce_only=True)
                 if res:
                     Log(f"✅ 跟踪止盈限价单已提交: {res}, 价格={limit_price}")
-                    # 关闭跟踪监控
-                    self.trailing_tp_monitor['active'] = False
-                    self.trailing_tp_monitor['activated'] = True
+                    # 标记已下单，避免重复下单
+                    self.trailing_tp_monitor['limit_order_placed'] = True
                 else:
                     Log("❌ 跟踪止盈限价单提交失败", "#FF0000")
 
 
         # 3. 检查保护性止损触发条件（仅在有仓位情况下检查）
         if not self.protective_sl_placed and current_amount > 0:
-            self._check_and_place_protective_sl(current_price, current_amount)
+            self._check_and_place_protective_sl(market_price, current_amount)
 
     def check_position_and_update_state(self):
         """
@@ -680,9 +686,9 @@ class LimitOrderStrategyManager:
             self.ex.SetContractType("swap")
             self.ex.SetCurrency(self.symbol)
 
-        # 获取当前价格
+        # 获取当前市场价格（用于监控触发）
         ticker = _C(self.ex.GetTicker)
-        current_price = ticker['Last']
+        market_price = ticker['Last']
 
         # 获取当前持仓
         current_amount, position_price = self._get_position_amount()
@@ -699,11 +705,11 @@ class LimitOrderStrategyManager:
         # ========== 原有状态处理 ==========
         # 根据当前状态分发到对应的处理函数
         if self.state == "WAIT_ENTRY":
-            self._handle_wait_entry_state(current_amount, position_price, expected_base, tolerance)
+            self._handle_wait_entry_state(current_amount, position_price, market_price, expected_base, tolerance)
         elif self.state == "ENTRY_DONE":
-            self._handle_entry_done_state(current_amount, position_price, expected_base, expected_full, tolerance)
+            self._handle_entry_done_state(current_amount, position_price, market_price, expected_base, expected_full, tolerance)
         elif self.state == "WAIT_EXIT":
-            self._handle_wait_exit_state(current_amount, position_price)
+            self._handle_wait_exit_state(current_amount, position_price, market_price)
 
     def _check_and_place_protective_sl(self, current_price, current_amount):
         """
@@ -807,9 +813,9 @@ class LimitOrderStrategyManager:
         callback_distance = self.cfg['trail_callback'] * self.atr_val
 
         self.trailing_tp_monitor = {
-            'active': False,
+            'is_monitoring': False,
             'activation_price': trail_activation,
-            'activated': False,
+            'limit_order_placed': False,
             'price_extreme': 0,
             'callback_distance': callback_distance,
         }
@@ -854,12 +860,12 @@ class LimitOrderStrategyManager:
                 lines.append(f"当前持仓: {self.last_position_amount}")
 
             # 显示监控状态
-            if self.entry_tracking['active']:
+            if self.entry_tracking['is_monitoring']:
                 lines.append("")
                 lines.append("-" * 50)
                 lines.append("🎯 入场跟踪监控")
                 lines.append("-" * 50)
-                if self.entry_tracking['activated']:
+                if self.entry_tracking['limit_order_placed']:
                     lines.append(f"状态: 已激活")
                     lines.append(f"价格极值: {self.entry_tracking['price_extreme']:.2f}")
 
@@ -876,12 +882,12 @@ class LimitOrderStrategyManager:
                 lines.append("-" * 50)
                 lines.append(f"触发价格: {self.add_position_monitor['trigger_price']:.2f}")
 
-            if self.trailing_tp_monitor['active']:
+            if self.trailing_tp_monitor['is_monitoring']:
                 lines.append("")
                 lines.append("-" * 50)
                 lines.append("🎯 跟踪止盈监控")
                 lines.append("-" * 50)
-                if self.trailing_tp_monitor['activated']:
+                if self.trailing_tp_monitor['limit_order_placed']:
                     lines.append(f"状态: 已激活")
                     lines.append(f"价格极值: {self.trailing_tp_monitor['price_extreme']:.2f}")
                     trigger_price = self.trailing_tp_monitor['price_extreme'] - self.direction * self.trailing_tp_monitor['callback_distance']
